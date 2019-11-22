@@ -1,0 +1,926 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:crclib/crclib.dart';
+import 'package:flustars/flustars.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_bugly/flutter_bugly.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:provide/provide.dart';
+import 'package:usb_serial/usb_serial.dart';
+import 'package:xianlin_wc/components/num.dart';
+import 'package:xianlin_wc/components/timerWidget.dart';
+import 'package:xianlin_wc/components/update_dialog.dart';
+import 'package:xianlin_wc/model/SmileModel.dart';
+import 'package:xianlin_wc/model/TempModel.dart';
+import 'package:xianlin_wc/model/UsingModel.dart';
+import 'package:xianlin_wc/model/ceweiModel.dart';
+import 'package:xianlin_wc/utils/dioUtil.dart';
+import 'package:xianlin_wc/utils/logUtil.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart' as flt;
+
+var config;
+LogUtils logUtil = new LogUtils();
+DioUtils dioUtil = DioUtils();
+CeweiModel c1 = CeweiModel();
+CeweiModel c2 = CeweiModel();
+CeweiModel c3 = CeweiModel();
+CeweiModel c4 = CeweiModel();
+CeweiModel c5 = CeweiModel();
+CeweiModel c6 = CeweiModel();
+CeweiModel c7 = CeweiModel();
+CeweiModel c8 = CeweiModel();
+CeweiModel c9 = CeweiModel();
+CeweiModel c10 = CeweiModel();
+CeweiModel c11 = CeweiModel();
+
+SmileModel smileModel = SmileModel();
+TempModel tempModel = TempModel();
+UsingModel usingModel = UsingModel();
+
+var s1 = ProviderScope("1");
+var s2 = ProviderScope("2");
+var s3 = ProviderScope("3");
+var s4 = ProviderScope("4");
+var s5 = ProviderScope("5");
+var s6 = ProviderScope("6");
+var s7 = ProviderScope("7");
+var s8 = ProviderScope("8");
+var s9 = ProviderScope("9");
+var s10 = ProviderScope("10");
+var s11 = ProviderScope("11");
+
+Future<Null> main() async {
+  
+  await SpUtil.getInstance();
+  config = await readJSON();
+  var providers = Providers()
+    ..provide(Provider.value(smileModel))
+    ..provide(Provider.value(tempModel))
+    ..provide(Provider.value(usingModel))
+    ..provide(Provider.value(c1), scope: s1)
+    ..provide(Provider.value(c2), scope: s2)
+    ..provide(Provider.value(c3), scope: s3)
+    ..provide(Provider.value(c4), scope: s4)
+    ..provide(Provider.value(c5), scope: s5)
+    ..provide(Provider.value(c6), scope: s6)
+    ..provide(Provider.value(c7), scope: s7)
+    ..provide(Provider.value(c8), scope: s8)
+    ..provide(Provider.value(c9), scope: s9)
+    ..provide(Provider.value(c10), scope: s10)
+    ..provide(Provider.value(c11), scope: s11);
+
+  FlutterBugly.postCatchedException(() => runApp(ProviderNode(
+        child: MyApp(),
+        providers: providers,
+      )));
+}
+
+// 读取 json 数据
+readJSON() async {
+  try {
+    final file = new File(await localPath());
+    bool isExist = await file.exists();
+    // print("file isExist: $isExist");
+    if (!isExist) {
+      await file.create(recursive: true);
+      String content =
+          "{\"name\":\"仙林智慧厕所\",\"smileNum\":0,\"normalNum\":0,\"sadNum\":0,\"askInterval\":100,\"sync\":false}";
+      //print("file content: $content");
+      await file.writeAsString(content);
+      return json.decode(content);
+    } else {
+      String str = await file.readAsString();
+      // logUtil.log("读取到config: $str");
+      print("读取到config: $str");
+      var _config = json.decode(str);
+      if (_config['sync']) {
+        _config['sync'] = false;
+      }
+      await file.writeAsString(json.encode(_config));
+      return json.decode(str);
+    }
+  } catch (err) {
+    // logUtil.log(err.toString());
+  }
+}
+
+localPath() async {
+  try {
+    var sdDir = await getExternalStorageDirectory();
+    return sdDir.path + "/sywl_config.json";
+  } catch (err) {
+    // logUtil.log(err.toString());
+  }
+}
+
+class MyApp extends StatelessWidget {
+  // This widget is the root of your application.
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Flutter Demo',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+      ),
+      home: MyHomePage(title: 'Flutter Demo Home Page'),
+    );
+  }
+}
+
+class MyHomePage extends StatefulWidget {
+  MyHomePage({Key key, this.title}) : super(key: key);
+
+  final String title;
+
+  @override
+  _MyHomePageState createState() => _MyHomePageState();
+}
+
+class _MyHomePageState extends State<MyHomePage> {
+
+  TimerUtil sendTimer;
+
+  Stream<Uint8List> inputStream;
+
+  int femaleTotal = 8;
+
+  int manTotal = 3;
+
+  int smileNum = 0;
+  int normalNum = 0;
+  int sadNum = 0;
+
+  List<UsbDevice> devices = [];
+  List<UsbDevice> serialDevices = List<UsbDevice>();
+  UsbPort sendPort;
+
+  List<Uint8List> commands = [
+    Uint8List.fromList([0x01, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFD, 0xCA]),
+    Uint8List.fromList([0x02, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFD, 0xF9]),
+    Uint8List.fromList([0x03, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFC, 0x28]),
+    Uint8List.fromList([0x04, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFD, 0x9F]),
+    Uint8List.fromList([0x05, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFC, 0x4E]),
+    Uint8List.fromList([0x06, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFC, 0x7D]),
+    Uint8List.fromList([0x07, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFD, 0xAC]),
+    Uint8List.fromList([0x08, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFD, 0x53]),
+    Uint8List.fromList([0x09, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFC, 0x82]),
+    Uint8List.fromList([0x0A, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFC, 0xB1]),
+    Uint8List.fromList([0x0B, 0x01, 0x00, 0x00, 0x00, 0x01, 0xFD, 0x60]),
+    Uint8List.fromList([0x28, 0x03, 0x00, 0x00, 0x00, 0x02, 0xC3, 0xF2]),
+    Uint8List.fromList([0x29, 0x03, 0x00, 0x10, 0x00, 0x01, 0x83, 0xE7]),
+    Uint8List.fromList([0x2A, 0x03, 0x00, 0x08, 0x00, 0x01, 0x03, 0xD3])
+  ];
+
+  double WW = 960;
+  double HH = 540;
+
+  // 1-14 是女厕
+  // 15-20 是男厕
+  @override
+  void initState() {
+    super.initState();
+
+  ////// 应用更新监测 /////
+    FlutterBugly.init(androidAppId: '4699802844');
+    // .then((_result) {
+    //   setState(() {
+    //     // _platformVersion = _result.message;
+    //     print(_result.appId);
+    //   });
+    // });
+    // FlutterBugly.setUserId("user id");
+    // FlutterBugly.putUserData(key: "key", value: "value");
+    // int tag = 9527;
+    // FlutterBugly.setUserTag(tag);
+    // if (mounted) _checkUpgrade();
+  ////// 应用更新监测 /////
+
+    //需要同步评价数量
+    if (config != null && config['sync']) {
+      smileNum = config['smileNum'];
+      normalNum = config['normalNum'];
+      sadNum = config['sadNum'];
+
+      SpUtil.putInt("smileNum", smileNum);
+      SpUtil.putInt("normalNum", normalNum);
+      SpUtil.putInt("sadNum", sadNum);
+    } else {
+      smileNum = SpUtil.getInt("smileNum") ?? 0;
+      normalNum = SpUtil.getInt("normalNum") ?? 0;
+      sadNum = SpUtil.getInt("sadNum") ?? 0;
+    }
+
+    //发送计
+    int sendIndex = 0;
+    sendTimer =
+        createTimerUtil(config != null ? config['askInterval'] : 100, (i) {
+      if (sendPort != null) {
+        logUtil.log("请求串口数据: ${commands[sendIndex]}");
+        sendPort.write(commands[sendIndex]).then((value) {
+          if (sendIndex == 13) {
+            sendIndex = 0;
+          } else {
+            sendIndex++;
+          }
+        });
+      }
+    });
+    sendTimer?.startTimer();
+
+    UsbSerial.usbEventStream.listen((UsbEvent msg) async {
+      //非USB鼠标
+      if (!msg.device.productName.contains('Mouse')) {
+        //print("Event: ${msg.event}, Msg: $msg");
+
+        if (msg.event == UsbEvent.ACTION_USB_ATTACHED) {
+          //监测到usb 上线
+          logUtil.log("====== 有usb接入 >> $msg");
+        }
+        if (msg.event == UsbEvent.ACTION_USB_DETACHED) {
+          //监测到usb 下线
+          logUtil.log("====== 有usb退出 >> $msg");
+        }
+        openUsbPorts();
+      }
+    });
+    openUsbPorts(); //获取usb设备
+  }
+
+  void _checkUpgrade() {
+    print("获取更新中。。。");
+    FlutterBugly.checkUpgrade().then((UpgradeInfo info) {
+      // print("info: $info");
+      // if (info != null && info.id != null) {
+      //   print("----------------${info.apkUrl}");
+      //   _showUpdateDialog(info.newFeature, info.apkUrl, info.upgradeType == 2);
+      // }
+    });
+  }
+
+  void _showUpdateDialog(String version, String url, bool isForceUpgrade) {
+    showDialog(
+      barrierDismissible: false,
+      context: context,
+      builder: (_) => _buildDialog(version, url, isForceUpgrade),
+    );
+  }
+  GlobalKey<UpdateDialogState> _dialogKey = new GlobalKey();
+  Widget _buildDialog(String version, String url, bool isForceUpgrade) {
+    return WillPopScope(
+        onWillPop: () async => isForceUpgrade,
+        child: UpdateDialog(
+          key: _dialogKey,
+          version: version,
+          onClickWhenDownload: (_msg) {
+            //提示不要重复下载
+          },
+          onClickWhenNotDownload: () {
+            //下载apk，完成后打开apk文件，建议使用dio+open_file插件
+          },
+        ));
+  }
+
+  //dio可以监听下载进度，调用此方法
+  void _updateProgress(_progress) {
+    setState(() {
+      _dialogKey.currentState.progress = _progress;
+    });
+  }
+
+  //////////////////////////////// 以上更新相关 ////////////////////////////////////////////
+
+  void openUsbPorts() async {
+    this.serialDevices = List<UsbDevice>(); //清零
+    this.devices = await UsbSerial.listDevices();
+
+    //print("获取到devices个数: ${devices.length},  详细: $devices");
+    logUtil.log("获取到devices个数: ${devices.length},  详细: $devices");
+    this.devices.forEach((d) {
+      if (!d.productName.toLowerCase().contains('mouse') &&
+          !d.productName.toLowerCase().contains('keyboard')) {
+        logUtil.log("遍历获取到的device: $d");
+        this.serialDevices.add(d);
+      }
+    });
+    fetchData();
+  }
+
+  void fetchData() async {
+    logUtil.log("当前连接的USB设备个数: ${serialDevices.length}, 详细: $serialDevices");
+    if (this.serialDevices.length == 0) {
+      return;
+    }
+
+    UsbDevice device1 = this.serialDevices[0];
+    fetchData1(device1);
+  }
+
+  //请求坑位信息
+  fetchData1(UsbDevice d) async {
+    UsbPort port = await d.create();
+    bool openResult = await port.open();
+    if (!openResult) {
+      //print("打开port 失败,设备：$d");
+      logUtil.log("打开port 失败,设备: $d");
+      return;
+    }
+    //设置发送端口
+    sendPort = port;
+    await port.setDTR(true);
+    await port.setRTS(true);
+    port.setPortParameters(
+        9600, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+    logUtil.log("设置 inputStream: ${port.inputStream}");
+    setState(() {
+      inputStream = port.inputStream;
+    });
+  }
+
+  //请求评价信息
+  //5A A5 06 83 00 00 02 00 01 满意++
+  //5A A5 06 83 00 00 02 00 02 一般++
+  //5A A5 06 83 00 00 02 00 03 不满意++
+
+  @override
+  void dispose() {
+    super.dispose();
+    sendTimer?.cancel();
+  }
+
+  TimerUtil createTimerUtil(int millisecond, OnTimerTickCallback callback) {
+    TimerUtil timer = TimerUtil();
+    timer.setInterval(millisecond);
+    timer.setOnTimerTickCallback(callback);
+    return timer;
+  }
+
+  listenData(BuildContext context) {
+    if (inputStream != null) {
+      this.inputStream.listen((event) {
+        logUtil.log("监听到串口数据: $event");
+        if (event.length == 0) return;
+
+        if (event.length == 6) {
+          bool flag = crcCheck(event.sublist(0, 4), event.sublist(4, 6));
+          if (!flag) return;
+        }
+        int address = event[0];
+        if (event.length == 6) {
+          int useFlag = event[3];
+
+          switch (address) {
+            case 1:
+              if (useFlag == 1 && !c1.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c1.changeHashPersion(true);
+              } else if (useFlag == 0 && c1.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c1.changeHashPersion(false);
+              }
+              break;
+            case 2:
+              if (useFlag == 1 && !c2.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c2.changeHashPersion(true);
+              } else if (useFlag == 0 && c2.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c2.changeHashPersion(false);
+              }
+              break;
+            case 3:
+              if (useFlag == 1 && !c3.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c3.changeHashPersion(true);
+              } else if (useFlag == 0 && c3.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c3.changeHashPersion(false);
+              }
+              break;
+            case 4:
+              if (useFlag == 1 && !c4.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c4.changeHashPersion(true);
+              } else if (useFlag == 0 && c4.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c4.changeHashPersion(false);
+              }
+              break;
+            case 5:
+              if (useFlag == 1 && !c5.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c5.changeHashPersion(true);
+              } else if (useFlag == 0 && c5.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c5.changeHashPersion(false);
+              }
+              break;
+            case 6:
+              if (useFlag == 1 && !c6.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c6.changeHashPersion(true);
+              } else if (useFlag == 0 && c6.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c6.changeHashPersion(false);
+              }
+              break;
+            case 7:
+              if (useFlag == 1 && !c7.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c7.changeHashPersion(true);
+              } else if (useFlag == 0 && c7.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c7.changeHashPersion(false);
+              }
+              break;
+            case 8:
+              if (useFlag == 1 && !c8.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c8.changeHashPersion(true);
+              } else if (useFlag == 0 && c8.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c8.changeHashPersion(false);
+              }
+              break;
+            case 9:
+              if (useFlag == 1 && !c9.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c9.changeHashPersion(true);
+              } else if (useFlag == 0 && c9.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c9.changeHashPersion(false);
+              }
+              break;
+            case 10:
+              if (useFlag == 1 && !c10.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c10.changeHashPersion(true);
+              } else if (useFlag == 0 && c10.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c10.changeHashPersion(false);
+              }
+              break;
+            case 11:
+              if (useFlag == 1 && !c11.hasPersion) {
+                usingModel.changeFemaleUsing("1");
+                c11.changeHashPersion(true);
+              } else if (useFlag == 0 && c11.hasPersion) {
+                usingModel.changeFemaleUsing("-1");
+                c11.changeHashPersion(false);
+              }
+              break;
+            default:
+              {}
+          }
+        } else if (address == 0x28 && event.length == 9) {
+          if (!crcCheck(event.sublist(0, 7), event.sublist(7, 9))) return;
+          int _hum = event[3] * 256 + event[4];
+          int _temp = event[5] * 256 + event[6];
+          logUtil.log("temp, hum: $_temp, $_hum");
+          tempModel.changeTempData(_temp / 10);
+          tempModel.changeHumData(_hum / 10);
+        } else if (address == 0x29 && event.length == 7) {
+          if (!crcCheck(event.sublist(0, 5), event.sublist(5, 7))) return;
+          //氨气
+          tempModel.changeNhData((event[3] * 256 + event[4]) / 10);
+        } else if (address == 0x2A && event.length == 7) {
+          if (!crcCheck(event.sublist(0, 5), event.sublist(5, 7))) return;
+          //空气质量
+          tempModel.changePmData(event[3] * 256 + event[4]);
+        } else if (event.length == 9 && event[0] == 0x5A && event[1] == 0xA5) {
+          logUtil.log("监听到【评价】数据 >> $event");
+          int satisfaction = event[8];
+          if (satisfaction == 0x01) {
+            smileModel.changeSmileNum();
+          } else if (satisfaction == 0x02) {
+            smileModel.changeNormalNum();
+          } else if (satisfaction == 0x03) {
+            smileModel.changeSadNum();
+          }
+        }
+      });
+    }
+  }
+
+  crcCheck(List<int> data, List<int> datacrc) {
+    int crc = ParametricCrc(16, 0x8005, 0xFFFF, 0x0000).convert(data);
+    Uint16List list16 = Uint16List.fromList([crc]);
+    Uint8List crcList = list16.buffer.asUint8List();
+    logUtil.log("crcdata: ${crcList.toString() == datacrc.toString()}");
+    return crcList.toString() == datacrc.toString();
+  }
+
+  double doTop(double _top, double height) {
+    return (_top / HH) * height;
+  }
+
+  double doLeft(double _left, double width) {
+    return (_left / WW) * width;
+  }
+
+  double convertHeight(double _height) {
+    return flt.ScreenUtil.getInstance().setHeight(_height);
+  }
+
+  double convertWidth(double _width) {
+    return flt.ScreenUtil.getInstance().setWidth(_width);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    flt.ScreenUtil.instance = flt.ScreenUtil(width: 1920, height: 1080)..init(context);
+    double mw = MediaQuery.of(context).size.width;
+    double mh = MediaQuery.of(context).size.height;
+    listenData(context);
+    return Scaffold(
+        body: Stack(
+      children: <Widget>[
+        Container(
+          height: mh,
+          width: mw,
+          child: Image.asset(
+            "assets/images/background.jpg",
+            fit: BoxFit.fill,
+          ),
+        ),
+
+        ///女厕总位
+        Positioned(
+          top: convertHeight(183),
+          left: convertWidth(300),
+          child: Num(number: femaleTotal.toString()),
+        ),
+        //女当前使用
+        Positioned(
+            top: convertHeight(248),
+            left: convertWidth(270),
+            child: Provide<UsingModel>(
+              builder: (context, widget, model) {
+                return Num(number: model.femaleUsing.toString());
+              },
+            )),
+        //女剩余位
+        Positioned(
+          top: convertHeight(248),
+          left: convertWidth(450),
+          child: Provide<UsingModel>(
+            builder: (context, widget, model) {
+              return Num(number: (femaleTotal - model.femaleUsing).toString());
+            },
+          ),
+        ),
+
+        ///男厕总位
+        Positioned(
+          top: convertHeight(338),
+          left: convertWidth(300),
+          child: Num(number: manTotal.toString()),
+        ),
+        //男当前使用
+        Positioned(
+            top: convertHeight(406),
+            left: convertWidth(270),
+            child: Provide<UsingModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: model.manUsing.toString(),
+                );
+              },
+            )),
+        //男剩余位
+        Positioned(
+            top: convertHeight(406),
+            left: convertWidth(450),
+            child: Provide<UsingModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: (manTotal - model.manUsing).toString(),
+                );
+              },
+            )),
+
+        /////////////// 满意度评价区 /////////////
+        Positioned(
+            left: convertWidth(100),
+            top: convertHeight(770),
+            child: Provide<SmileModel>(
+              builder: (context, widget, model) {
+                int totalSatisNum = model.totalSatisNum;
+                return Num(
+                  number: totalSatisNum == 0
+                      ? "0.0%"
+                      : (model.smileNum * 100 / totalSatisNum)
+                              .toStringAsFixed(1) +
+                          "%",
+                );
+              },
+            )),
+        Positioned(
+            left: convertWidth(265),
+            top: convertHeight(770),
+            child: Provide<SmileModel>(
+              builder: (context, widget, model) {
+                int totalSatisNum = model.totalSatisNum;
+                return Num(
+                  number: totalSatisNum == 0
+                      ? "0.0%"
+                      : (model.normalNum * 100 / totalSatisNum)
+                              .toStringAsFixed(1) +
+                          "%",
+                );
+              },
+            )),
+        Positioned(
+            left: convertWidth(430),
+            top: convertHeight(770),
+            child: Provide<SmileModel>(
+              builder: (context, widget, model) {
+                int totalSatisNum = model.totalSatisNum;
+                return Num(
+                  number: totalSatisNum == 0
+                      ? "0.0%"
+                      : (model.sadNum * 100 / totalSatisNum)
+                              .toStringAsFixed(1) +
+                          "%",
+                );
+              },
+            )),
+
+        /////////////////今日客流
+        Positioned(
+          left: doLeft(150, mw),
+          top: doTop(485, mh),
+          child: Provide<UsingModel>(
+            builder: (context, widget, model) {
+              return Num(
+                number: model.todayFemale.toString(),
+              );
+            },
+          ),
+        ),
+        Positioned(
+            left: doLeft(235, mw),
+            top: doTop(485, mh),
+            child: Provide<UsingModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: model.todayMan.toString(),
+                );
+              },
+            )),
+
+        /////////////// 温湿度 ////////////////
+        Positioned(
+            top: convertHeight(923),
+            left: convertWidth(1335),
+            child: Provide<TempModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: model.tempData.toString() + " ℃",
+                );
+              },
+            )),
+
+        Positioned(
+            top: convertHeight(923),
+            left: convertWidth(1665),
+            child: Provide<TempModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: model.humData.toString() + " %",
+                );
+              },
+            )),
+
+        Positioned(
+            top: convertHeight(995),
+            left: convertWidth(1328),
+            child: Provide<TempModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: model.nhData.toString() + " ppm",
+                  size: 18,
+                );
+              },
+            )),
+
+        Positioned(
+            top: convertHeight(1002),
+            left: convertWidth(1725),
+            child: Provide<TempModel>(
+              builder: (context, widget, model) {
+                return Num(
+                  number: "PM2.5: " + model.pmData.toString(),
+                  size: 18,
+                );
+              },
+            )),
+
+        Positioned(
+          top: doTop(148, mh),
+          left: doLeft(315, mw),
+          child: Provide<CeweiModel>(
+            scope: s1,
+            builder: (context, widget, model) {
+              return Opacity(
+                opacity: model.hasPersion ? 1 : 0,
+                child: Image.asset(
+                  "assets/images/1.png",
+                  //width: 226 * 960 / 1920,
+                  width: convertWidth(226),
+                  height: convertHeight(104),
+                ),
+              );
+            },
+          ),
+          //
+        ),
+        Positioned(
+          top: doTop(185, mh),
+          left: doLeft(324, mw),
+          child: Provide<CeweiModel>(
+            scope: s2,
+            builder: (context, widget, model) {
+              return Opacity(
+                opacity: model.hasPersion ? 1 : 0,
+                child: Image.asset(
+                  "assets/images/2.png",
+                  //width: 227 * 960 / 1920,
+                  width: convertWidth(227),
+                  height: convertHeight(94),
+                ),
+              );
+            },
+          ),
+        ),
+        Positioned(
+          top: doTop(216, mh),
+          left: doLeft(335, mw),
+          child: Provide<CeweiModel>(
+            scope: s3,
+            builder: (context, widget, model) {
+              return Opacity(
+                opacity: model.hasPersion ? 1 : 0,
+                child: Image.asset(
+                  "assets/images/3.png",
+                  //width: 241 * 960 / 1920,
+                  width: convertWidth(241),
+                  height: convertHeight(106),
+                ),
+              );
+            },
+          ),
+        ),
+        Positioned(
+            top: doTop(249, mh),
+            left: doLeft(344, mw),
+            child: Provide<CeweiModel>(
+              scope: s4,
+              builder: (context, widget, model) {
+                return Opacity(
+                  opacity: model.hasPersion ? 1 : 0,
+                  child: Image.asset(
+                    "assets/images/4.png",
+                    //width: 260 * 960 / 1920,
+                  width: convertWidth(260),
+                  height: convertHeight(226),
+                  ),
+                );
+              },
+            )),
+        Positioned(
+          top: doTop(125, mh),
+          left: doLeft(483, mw),
+          child: Provide<CeweiModel>(
+            scope: s5,
+            builder: (context, widget, model) {
+              return Opacity(
+                opacity: model.hasPersion ? 1 : 0,
+                child: Image.asset(
+                  "assets/images/5.png",
+                  //width: 217 * 960 / 1920,
+                  width: convertWidth(217),
+                  height: convertHeight(194),
+                ),
+              );
+            },
+          ),
+        ),
+        Positioned(
+          top: doTop(160, mh),
+          left: doLeft(531, mw),
+          child: Provide<CeweiModel>(
+            scope: s6,
+            builder: (context, widget, model) {
+              return Opacity(
+                opacity: model.hasPersion ? 1 : 0,
+                child: Image.asset(
+                  "assets/images/6.png",
+                  //width: 163 * 960 / 1920,
+                  width: convertWidth(163),
+                  height: convertHeight(163),
+                ),
+              );
+            },
+          ),
+        ),
+        Positioned(
+          top: doTop(184, mh),
+          left: doLeft(550, mw),
+          child: Provide<CeweiModel>(
+              scope: s7,
+              builder: (context, widget, model) {
+                return Opacity(
+                  opacity: model.hasPersion ? 1 : 0,
+                  child: Image.asset(
+                    "assets/images/7.png",
+                    //width: 171 * 960 / 1920,
+                  width: convertWidth(171),
+                  height: convertHeight(183),
+                  ),
+                );
+              }),
+        ),
+        Positioned(
+            top: doTop(212, mh),
+            left: doLeft(568, mw),
+            child: Provide<CeweiModel>(
+              scope: s8,
+              builder: (context, widget, model) {
+                return Opacity(
+                  opacity: model.hasPersion ? 1 : 0,
+                  child: Image.asset(
+                    "assets/images/8.png",
+                    //width: 188 * 960 / 1920,
+                  width: convertWidth(188),
+                  height: convertHeight(195),
+                  ),
+                );
+              },
+            )),
+        Positioned(
+            top: doTop(121, mh),
+            left: doLeft(577, mw),
+            child: Provide<CeweiModel>(
+              scope: s9,
+              builder: (context, widget, model) {
+                return Opacity(
+                  opacity: model.hasPersion ? 1 : 0,
+                  child: Image.asset(
+                    "assets/images/9.png",
+                    //width: 172 * 960 / 1920,
+                  width: convertWidth(172),
+                  height: convertHeight(84),
+                  ),
+                );
+              },
+            )),
+        Positioned(
+            top: doTop(149, mh),
+            left: doLeft(593, mw),
+            child: Provide<CeweiModel>(
+              scope: s10,
+              builder: (context, widget, model) {
+                return Opacity(
+                  opacity: model.hasPersion ? 1 : 0,
+                  child: Image.asset(
+                    "assets/images/10.png",
+                    //width: 182 * 960 / 1920,
+                  width: convertWidth(182),
+                  height: convertHeight(78),
+                  ),
+                );
+              },
+            )),
+        Positioned(
+            top: doTop(168, mh),
+            left: doLeft(616, mw),
+            child: Provide<CeweiModel>(
+              scope: s11,
+              builder: (context, widget, model) {
+                return Opacity(
+                  opacity: model.hasPersion ? 1 : 0,
+                  child: Image.asset(
+                    "assets/images/11.png",
+                    //width: 192 * 960 / 1920,
+                  width: convertWidth(192),
+                  height: convertHeight(165),
+                  ),
+                );
+              },
+            )),
+
+        //右上角时间
+        Positioned(
+          right: doLeft(30, mw),
+          top: doTop(30, mh),
+          child: TimerWidget(
+            usingModel: usingModel,
+          ),
+        )
+      ],
+    ));
+  }
+}
